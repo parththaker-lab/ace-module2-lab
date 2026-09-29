@@ -21,6 +21,18 @@ function favicon () {
   return utils.extractFilename(config.get('application.favicon'))
 }
 
+function sanitizeUsername (username: string): string {
+  username = username
+    .replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/#{/g, '\\#{')
+    .replace(/!{/g, '\\!{')
+    .replace(/#\[/g, '\\#[')
+  if (!username.startsWith('\\')) {
+    username = '\\' + username
+  }
+  return username
+}
+
 export function getUserProfile () {
   return async (req: Request, res: Response, next: NextFunction) => {
     let template: string
@@ -53,39 +65,43 @@ export function getUserProfile () {
 
     if (username?.match(/#{(.*)}/) !== null && utils.isChallengeEnabled(challenges.usernameXssChallenge)) {
       req.app.locals.abused_ssti_bug = true
-      const code = username?.substring(2, username.length - 1)
+      const match = username.match(/^#{(.*)}$/)
+      const code = match ? match[1] : null
       try {
         if (!code) {
           throw new Error('Username is null')
         }
         const singleQuoteRegex = /^'(?:[^'\\]|\\.)*'$/
-        const doubleQuoteRegex = /^"(?:[^"\\]|\\.)*"$/
+        const doubleQuoteRegex = /^\"(?:[^\"\\\\]|\\\\.)*\"$/
         const backtickRegex = /^`(?:[^`\\$]|\\.|\$(?!{))*`$/
         const numericRegex = /^-?\d+(?:\.\d+)?$/
+        const arithmeticRegex = /^[0-9+\-*/%().\s]*[0-9][0-9+\-*/%().\s]*$/
         const booleanRegex = /^(?:true|false|null|undefined)$/
 
         const isSafe = singleQuoteRegex.test(code) ||
           doubleQuoteRegex.test(code) ||
           backtickRegex.test(code) ||
           numericRegex.test(code) ||
+          arithmeticRegex.test(code) ||
           booleanRegex.test(code)
 
         if (!isSafe) {
           throw new Error('Unsafe code execution blocked')
         }
-        username = eval(code) // eslint-disable-line no-eval
+        username = String(eval(code)) // eslint-disable-line no-eval
+        username = sanitizeUsername(username)
       } catch (err) {
-        username = '\\' + username
+        username = sanitizeUsername(username)
       }
-    } else {
-      username = '\\' + username
+    } else if (username) {
+      username = sanitizeUsername(username)
     }
 
     const themeKey = config.get<string>('application.theme') as keyof typeof themes
     const theme = themes[themeKey] || themes['bluegrey-lightgreen']
 
     if (username) {
-      template = template.replace(/_username_/g, username)
+      template = template.replace(/_username_/g, () => username)
     }
     template = template.replace(/_emailHash_/g, security.hash(user?.email))
     template = template.replace(/_title_/g, entities.encode(config.get<string>('application.name')))
